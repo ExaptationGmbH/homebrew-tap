@@ -7,28 +7,28 @@
 class Rgit < Formula
   desc "Run a git command across every repo beneath the current directory"
   homepage "https://github.com/ExaptationGmbH/rgit"
-  version "0.0.1"
+  version "0.0.2"
   license "MIT"
 
   on_macos do
     on_arm do
       url "https://github.com/ExaptationGmbH/rgit/releases/download/v#{version}/rgit-v#{version}-darwin-arm64"
-      sha256 "b3ce7f944839ee3e1956be973bf6df1a503aaa6ee06198eea6330ac813122619"
+      sha256 "0dd3dd84f01afdace7d19f5244ba9171473d8564d9e6c970031e6245024ceb61"
     end
     on_intel do
       url "https://github.com/ExaptationGmbH/rgit/releases/download/v#{version}/rgit-v#{version}-darwin-amd64"
-      sha256 "56c7481e60794d5f1ac677d90b94730115a2e48dd26683318b533a9e696b23b1"
+      sha256 "3ca14b31369ad166ac59e2b6e1fc64a9a4f00777ebd31dd443e4783d51ade06f"
     end
   end
 
   on_linux do
     on_arm do
       url "https://github.com/ExaptationGmbH/rgit/releases/download/v#{version}/rgit-v#{version}-linux-arm64"
-      sha256 "9452b5711024ed397b7a9cb01716d99d525e282c58e5fd2563c350fd877e7ba4"
+      sha256 "923497bcd0945f9731b8f272bc1c7f44beaac25513c14bf4f7c5e3679ef7779c"
     end
     on_intel do
       url "https://github.com/ExaptationGmbH/rgit/releases/download/v#{version}/rgit-v#{version}-linux-amd64"
-      sha256 "ce5c665b9dd3171c76fcbf56cd7ff99a3bc42a83e4418085c79c55914006e9d6"
+      sha256 "133319e2ec3c3d4f320d7507c2c6eec2ea5d8ea61650e61233352d7bc4f8308d"
     end
   end
 
