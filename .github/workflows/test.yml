@@ -1,0 +1,48 @@
+name: test
+
+# Runs on formula PRs (including the auto-bump PRs, which are dispatched
+# explicitly by bump.yml) and manual dispatch. Not on push, so seeding a
+# placeholder formula never produces a red run.
+on:
+  pull_request:
+    paths:
+      - "Formula/**"
+      - ".github/workflows/test.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Audit, install and test each formula
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for f in Formula/*.rb; do
+            name=$(basename "$f" .rb)
+            echo "::group::$name"
+            brew audit --strict "$f"
+            brew install "$f"
+            brew test "$name"
+            expected=$(grep -E '^\s*version\s+"' "$f" | head -1 | sed -E 's/.*version\s+"([^"]+)".*/\1/')
+            actual=$("$name" version || true)
+            echo "expected=$expected actual=$actual"
+            case "$actual" in
+              *"$expected"*) echo "version ok" ;;
+              *) echo "::error::$name version '$actual' did not contain '$expected'"; exit 1 ;;
+            esac
+            echo "::endgroup::"
+          done

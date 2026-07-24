@@ -1,0 +1,164 @@
+name: Bump formulae on new upstream releases
+
+# Shared tap: one matrix entry per tool. Each entry polls its upstream repo's
+# latest GitHub Release and, when it's newer than the formula, downloads the
+# release binaries, recomputes the four sha256s, rewrites the formula, and
+# opens an auto-merging PR. Add a new tool by adding a matrix entry below.
+
+on:
+  schedule:
+    - cron: "17 * * * *" # hourly at :17
+  workflow_dispatch:
+
+permissions:
+  contents: write # push the bump branch
+  pull-requests: write # open PR + enable auto-merge
+  actions: write # dispatch test.yml against the new branch
+
+jobs:
+  check-and-bump:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tool:
+          - name: rgit
+            repo: ExaptationGmbH/rgit
+            formula: Formula/rgit.rb
+    steps:
+      - name: Checkout tap
+        uses: actions/checkout@v4
+
+      - name: Read current formula version
+        id: current
+        run: |
+          set -euo pipefail
+          version=$(grep -E '^\s*version\s+"' "${{ matrix.tool.formula }}" | head -1 | sed -E 's/.*version\s+"([^"]+)".*/\1/')
+          if [ -z "$version" ]; then
+            echo "::error::Could not parse version from ${{ matrix.tool.formula }}"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch latest upstream release
+        id: latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag=$(gh release view --repo "${{ matrix.tool.repo }}" --json tagName -q .tagName 2>/dev/null || echo "")
+          if [ -z "$tag" ]; then
+            echo "No releases yet for ${{ matrix.tool.repo }}; nothing to do."
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "version=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether a bump is needed
+        id: check
+        run: |
+          set -euo pipefail
+          current="${{ steps.current.outputs.version }}"
+          latest="${{ steps.latest.outputs.version }}"
+          if [ -z "$latest" ] || [ "$current" = "$latest" ]; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Refuse to downgrade — sort -V puts the higher version last.
+          higher=$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -1)
+          if [ "$higher" != "$latest" ]; then
+            echo "::warning::Latest ($latest) is older than formula ($current); skipping."
+            echo "needed=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "Bumping ${{ matrix.tool.name }} $current -> $latest"
+          echo "needed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Recompute sha256s and rewrite formula
+        if: steps.check.outputs.needed == 'true'
+        env:
+          TOOL: ${{ matrix.tool.name }}
+          REPO: ${{ matrix.tool.repo }}
+          FORMULA: ${{ matrix.tool.formula }}
+          NEW_TAG: ${{ steps.latest.outputs.tag }}
+          NEW_VERSION: ${{ steps.latest.outputs.version }}
+        run: |
+          set -euo pipefail
+          declare -A shas
+          for arch in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64; do
+            url="https://github.com/${REPO}/releases/download/${NEW_TAG}/${TOOL}-${NEW_TAG}-${arch}"
+            echo "Hashing $url"
+            sha=$(curl -sfL "$url" | sha256sum | awk '{print $1}')
+            if [ ${#sha} -ne 64 ]; then
+              echo "::error::Failed to fetch or hash $url (got '$sha')"; exit 1
+            fi
+            shas[$arch]=$sha
+          done
+
+          python3 - "$FORMULA" "$NEW_VERSION" "$TOOL" \
+            "${shas[darwin-arm64]}" "${shas[darwin-amd64]}" \
+            "${shas[linux-arm64]}" "${shas[linux-amd64]}" <<'PY'
+          import re, sys
+          from pathlib import Path
+          formula, new_version, tool, da, di, la, li = sys.argv[1:8]
+          shas = {
+              "darwin-arm64": da, "darwin-amd64": di,
+              "linux-arm64":  la, "linux-amd64":  li,
+          }
+          p = Path(formula)
+          src = p.read_text()
+          src, n = re.subn(r'version "[^"]+"', f'version "{new_version}"', src, count=1)
+          if n != 1:
+              sys.exit("failed to find version line")
+          for arch, sha in shas.items():
+              pat = re.compile(
+                  r'(url\s+"[^"]*' + re.escape(tool) + r'-v#\{version\}-'
+                  + re.escape(arch) + r'"\s*\n\s*sha256\s+)"[^"]+"'
+              )
+              src, n = pat.subn(r'\1"' + sha + '"', src)
+              if n != 1:
+                  sys.exit(f"failed to update sha256 for {arch} (matched {n})")
+          p.write_text(src)
+          print(f"updated {formula} -> {new_version}")
+          PY
+
+      - name: Open pull request
+        if: steps.check.outputs.needed == 'true'
+        id: cpr
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: bump-${{ matrix.tool.name }}-${{ steps.latest.outputs.version }}
+          commit-message: "chore: bump ${{ matrix.tool.name }} to ${{ steps.latest.outputs.version }}"
+          title: "Bump ${{ matrix.tool.name }} to ${{ steps.latest.outputs.version }}"
+          body: |
+            Automated bump: a new `${{ matrix.tool.repo }}` release was detected.
+
+            - **Tag:** [`${{ steps.latest.outputs.tag }}`](https://github.com/${{ matrix.tool.repo }}/releases/tag/${{ steps.latest.outputs.tag }})
+            - **Previous:** `${{ steps.current.outputs.version }}` → **New:** `${{ steps.latest.outputs.version }}`
+
+            All four sha256s recomputed from the release assets. Auto-merges once `test` passes.
+          labels: |
+            bot
+            release-bump
+
+      - name: Dispatch test workflow against the bump branch
+        if: steps.check.outputs.needed == 'true' && steps.cpr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # PRs opened with GITHUB_TOKEN don't fire pull_request events, so
+          # kick the test workflow off explicitly against the branch HEAD.
+          gh workflow run test.yml \
+            --repo "${{ github.repository }}" \
+            --ref "bump-${{ matrix.tool.name }}-${{ steps.latest.outputs.version }}"
+
+      - name: Enable auto-merge
+        if: steps.check.outputs.needed == 'true' && steps.cpr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge --auto --squash \
+            --repo "${{ github.repository }}" \
+            "${{ steps.cpr.outputs.pull-request-number }}" \
+            || echo "::warning::Enable 'Allow auto-merge' in repo settings."
