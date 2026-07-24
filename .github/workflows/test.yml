@@ -27,16 +27,26 @@ jobs:
       - name: Set up Homebrew
         uses: Homebrew/actions/setup-homebrew@master
 
+      # brew audit/test only accept a tap-qualified NAME, not a path, so link
+      # this checkout in as the ExaptationGmbH/tap tap.
+      - name: Register checkout as a tap
+        run: |
+          set -euo pipefail
+          tap_dir="$(brew --repository)/Library/Taps/exaptationgmbh/homebrew-tap"
+          mkdir -p "$(dirname "$tap_dir")"
+          ln -s "$GITHUB_WORKSPACE" "$tap_dir"
+
       - name: Audit, install and test each formula
         run: |
           set -euo pipefail
           shopt -s nullglob
           for f in Formula/*.rb; do
             name=$(basename "$f" .rb)
+            ref="ExaptationGmbH/tap/${name}"
             echo "::group::$name"
-            brew audit --strict "$f"
-            brew install "$f"
-            brew test "$name"
+            brew audit --strict "$ref"
+            brew install "$ref"
+            brew test "$ref"
             expected=$(grep -E '^\s*version\s+"' "$f" | head -1 | sed -E 's/.*version\s+"([^"]+)".*/\1/')
             actual=$("$name" version || true)
             echo "expected=$expected actual=$actual"
